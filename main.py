@@ -12,6 +12,7 @@ import json
 import random
 import math
 import jwt
+import string
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'rahasia'
@@ -118,7 +119,7 @@ def create_transaction():
         token = auth_header.split()[1]
 
         token = decode_token(token)
-        if token is False:git add .
+        if token is False:
             return jsonify({'message': "no token"}), 401
         
         email = token.get("email")
@@ -152,5 +153,78 @@ def create_transaction():
     else:
         return jsonify({'message': 'Invalid request method'}), 405
 
+
+# give role
+# @app.route("<:username>/roles/<:role_id>", methods=["PUT"])
+# @cross_origin()
+# def set_roles(username, role_id):
+#     cur = mysql.connection.cursor()
+#     cur.execute('UPDATE')
+
+# filter graph by date in user
+@app.route("/paid", methods=["GET"])
+@cross_origin()
+
+## for example may month 
+def graph_transaction_by_day():
+    start_date, end_date, year = get_query_params()
+    cur = mysql.connection.cursor()
+
+    # months = []
+
+    # print(start_date)
+    if start_date == None and end_date == None and year == None:
+        return jsonify({"error": "bad request, one parameter needed"}), 400
+    try:
+        your_datas = []
+        dates = []
+        for i in range(1, 13):
+            start_date = f'{year}-{i:02d}-01'
+            if i in {1, 3, 5, 7, 8, 10, 12}:
+                end_date = f'{year}-{i:02d}-31' 
+            elif i == 2:
+                end_date = f'{year}-{i:02d}-29'
+
+                # // kabisat
+            else:
+                end_date = f'{year}-{i:02d}-30'
+            dates.append([start_date, end_date])
+        
+        for val in dates:
+            sum = 0
+            print(f"{val[0]}, {val[1]}")
+            cur.execute('''SELECT * FROM transaksi WHERE email = %s AND created_at BETWEEN %s AND %s''', ("w@gmail.com", val[0], val[1]))
+            rv = cur.fetchall()
+
+            flag = None
+            for data in rv:
+                if flag is None:
+                    flag = data[2]
+                    flag = flag.strftime("%m")
+                    flag = int(flag[1:])
+                sum = sum + data[3]
+            obj = dict(month = flag, price = sum)
+            your_datas.append(obj)
+        
+        cur.close()
+        # sum = 0
+        # for val in rv:
+        #     sum = sum + val[3]
+        # print(sum)
+
+        return jsonify({"data": your_datas}), 200
+    except Exception as e:
+        return jsonify({"message": e}), 500
+
+def get_query_params():
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    year = request.args.get("year")
+    return start_date, end_date, year
+
+# @app.route("/")
+# @cross_origin()
+# def graph_transaction_by_month():
+
 if __name__ == '__main__':
-    app.run(debug=True, threaded=True)
+    app.run(debug=True)
