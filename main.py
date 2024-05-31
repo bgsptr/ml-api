@@ -155,18 +155,38 @@ def create_transaction():
 
 
 # give role
-# @app.route("<:username>/roles/<:role_id>", methods=["PUT"])
-# @cross_origin()
-# def set_roles(username, role_id):
-#     cur = mysql.connection.cursor()
-#     cur.execute('UPDATE')
+@app.route("/roles/<:role_id>/<:username>", methods=["PUT"])
+@cross_origin()
+def set_roles(username, role_id):
+    cur = mysql.connection.cursor()
+    cur.execute('''INSERT INTO users (id_role, email) VALUES (%s, %s)''', (role_id, username))
+    cur.close()
 
 # filter graph by date in user
 @app.route("/paid", methods=["GET"])
 @cross_origin()
+def statistic_controller():
+    role = get_role_query()
+    print(role)
+    your_datas = graph_transaction_by_day(role)
+    if your_datas is not None:
+        return jsonify({"data": your_datas}), 200
 
 ## for example may month 
-def graph_transaction_by_day():
+def graph_transaction_by_day(role):
+    try:
+        auth_header = request.headers.get("Authorization")
+        token = auth_header.split()[1]
+
+        token = decode_token(token)
+        if token is False:
+            return jsonify({'message': "no token"}), 401
+            
+        email = token.get("email")
+    except Exception as e:
+        return jsonify({"error": e}), 500
+
+
     start_date, end_date, year = get_query_params()
     cur = mysql.connection.cursor()
 
@@ -185,7 +205,7 @@ def graph_transaction_by_day():
             elif i == 2:
                 end_date = f'{year}-{i:02d}-29'
 
-                # // kabisat
+                # also later add kabisat
             else:
                 end_date = f'{year}-{i:02d}-30'
             dates.append([start_date, end_date])
@@ -193,7 +213,11 @@ def graph_transaction_by_day():
         for val in dates:
             sum = 0
             print(f"{val[0]}, {val[1]}")
-            cur.execute('''SELECT * FROM transaksi WHERE email = %s AND created_at BETWEEN %s AND %s''', ("w@gmail.com", val[0], val[1]))
+            
+            if role != "admin":
+                cur.execute('''SELECT * FROM transaksi WHERE email = %s AND created_at BETWEEN %s AND %s''', (email, val[0], val[1]))
+            else:
+                cur.execute('''SELECT * FROM transaksi created_at BETWEEN %s AND %s''', (val[0], val[1]))
             rv = cur.fetchall()
 
             flag = None
@@ -207,12 +231,8 @@ def graph_transaction_by_day():
             your_datas.append(obj)
         
         cur.close()
-        # sum = 0
-        # for val in rv:
-        #     sum = sum + val[3]
-        # print(sum)
-
-        return jsonify({"data": your_datas}), 200
+        return your_datas
+    
     except Exception as e:
         return jsonify({"message": e}), 500
 
@@ -221,6 +241,11 @@ def get_query_params():
     end_date = request.args.get("end_date")
     year = request.args.get("year")
     return start_date, end_date, year
+
+def get_role_query():
+    role = request.args.get("role")
+    return role
+
 
 # @app.route("/")
 # @cross_origin()
