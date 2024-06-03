@@ -36,7 +36,7 @@ def update_price(id_transaction):
             res = supabase_client.table('transactions').update({'price': price}).eq('id_transaction', id_transaction).execute()
             updated_data_price = res.data[0]
             if updated_data_price is None:
-                return jsonify({"error": "supabase server error, can't update data"}), 500
+                return jsonify({"error": "id transaction not found"}), 404
             
             ## update saldo dari wallet user atau pakai trigger sql
             
@@ -470,6 +470,13 @@ def view_specific_wallet(id_wallet):
         return jsonify({'error': 'method not allowed'}), 405
 
 #update saldo user atau menggunakan trigger sql
+
+
+#tes
+@app.route("/hello", methods=["GET"])
+@cross_origin()
+def hello():
+    return jsonify({"message": "hello"}), 200
     
 if __name__ == '__main__':
     app.run(debug=True)
