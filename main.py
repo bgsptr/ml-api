@@ -36,7 +36,7 @@ def update_price(id_transaction):
             res = supabase_client.table('transactions').update({'price': price}).eq('id_transaction', id_transaction).execute()
             updated_data_price = res.data[0]
             if updated_data_price is None:
-                return jsonify({"error": "supabase server error, can't update data"}), 500
+                return jsonify({"error": "id transaction not found"}), 404
             
             ## update saldo dari wallet user atau pakai trigger sql
             
@@ -44,6 +44,8 @@ def update_price(id_transaction):
         
         except Exception as e:
             return jsonify({'error': 'Internal server error', 'error_msg': str(e)}), 500
+    else:
+        return jsonify({'error': 'method not allowed'}), 405
         
 @app.route('/register', methods=['POST'])
 @cross_origin()
@@ -170,7 +172,7 @@ def create_transaction():
             for file in files:
                 file_path = file.filename
                 img_tf_data = {
-                    'id_bottle': 2,
+                    # 'id_bottle': 2,
                     'id_transaction': generateID,
                     'file_path': file_path
                 }
@@ -202,7 +204,6 @@ def set_roles(role_id, email):
 
     return jsonify({'message': 'ok update role user'}), 200
 
-# filter graph by date in user
 @app.route("/paid", methods=["GET"])
 @cross_origin()
 def statistic_controller():
@@ -212,7 +213,6 @@ def statistic_controller():
     if your_datas is not None:
         return jsonify({"data": your_datas}), 200
 
-## for example may month 
 def graph_transaction_by_day(role):
     try:
         auth_header = request.headers.get("Authorization")
@@ -470,6 +470,13 @@ def view_specific_wallet(id_wallet):
         return jsonify({'error': 'method not allowed'}), 405
 
 #update saldo user atau menggunakan trigger sql
+
+
+#tes
+@app.route("/hello", methods=["GET"])
+@cross_origin()
+def hello():
+    return jsonify({"message": "hello"}), 200
     
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
