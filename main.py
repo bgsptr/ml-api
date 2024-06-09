@@ -1,4 +1,5 @@
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, url_for
+# flask version 2.2.2 cek untuk send_from_directory atau fungsi lainnya
 from flask_cors import CORS, cross_origin
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img
@@ -14,6 +15,8 @@ import jwt
 import datetime
 
 from config.spbs import get_supabase_client
+from flask_oauthlib.client import OAuth
+
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'rahasia'
@@ -25,6 +28,200 @@ model = load_model('ecopc_b3.h5')
 
 supabase_client = get_supabase_client()
 
+# class UserProfile(Form):
+#     email = StringField('email')
+#     password = PasswordField('password')
+#     first_name = StringField('fname')
+#     last_name = StringField('lname')
+
+#     def _length(min=None, max=None, message=message):
+#         if min == None and max == None and min < len() and max > len():
+#             raise ValidationError(f"please fill character > {min} and len of characters < {max}")
+        
+
+
+# class Graph(Form):
+#     year = StringField('year', [InputRequired()])
+
+#     def validate_year(form, field):
+#         data = field.data
+#         if not re.search("^\d+$", field.data):
+#             raise ValidationError('field must not contain word')
+
+#         if data == year and len(data) != 4:
+#             raise ValidationError('Field must equal with 4 characters')
+
+from flask_mail import Mail, Message
+from flask_caching import Cache
+
+app.config['MAIL_SERVER']= 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USERNAME'] = 'tachibanahinata2021@gmail.com'
+app.config['MAIL_PASSWORD'] = 'raxz inbs buag hylt'
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USE_SSL'] = False
+
+app.config['CACHE_TYPE'] = 'simple'
+
+mail = Mail(app)
+
+cache = Cache(app)
+
+@app.route('/email/otp', methods=["POST"])
+@cross_origin()
+def email_otp():
+    
+    if request.method == "POST":
+        try:
+            otp = request.json["otp"]
+            email = request.json["email"]
+            cached_otp = cache.get("your_otp")
+            print(f"Received OTP: {otp}, Cached OTP: {cached_otp}, Email: {email}")
+                
+            if cached_otp is None:
+                return jsonify({'error': 'your current otp already out of time, please send again'}), 404
+            if str(otp) == str(cached_otp) and email is not None:
+                token = jwt.encode({'email': email}, app.config['SECRET_KEY'], algorithm='HS256')
+                return jsonify({'message': 'Login 200 OK', 'token': token}), 200
+
+            return jsonify({'message': 'aneh'}), 400
+        except Exception as e:
+            return jsonify({'message': 'otp verified error', 'error_msg': str(e)}), 500
+
+    else:
+        return jsonify({'message': 'method not allowed'}), 405
+
+
+@app.route('/login', methods=['POST'])
+@cross_origin()
+def login():
+    if request.method == "POST":
+        email=request.json["email"]
+        password=request.json["password"]
+        try:
+            response = supabase_client.table('users').select('email, password').eq('email', email).execute()
+            userFound = response.data[0]
+            print(userFound)
+
+            # password registered on the app
+            if userFound is not None and password == userFound['password']:
+
+                randomIDVerification = random.randint(100000, 999999)
+                msg = Message(subject='Ini kode otp-mu', sender="tachibanahinata2021@gmail.com", recipients=[userFound['email']])
+                msg.body = f"{randomIDVerification}"
+                mail.send(msg)
+                cache.set("your_otp", randomIDVerification, timeout=180)
+                return jsonify({"message": "please check your email for otp verification", "email": userFound['email']}), 200
+
+            else:
+                return jsonify({'message': 'Invalid credentials'}), 401
+        except Exception as e:
+            return jsonify({'error': 'Internal server error', 'error_msg': str(e)}), 500
+
+# @app.route('/logout', methods=['POST'])
+# @cross_origin()
+# def user_logout():
+#     if request.method == "POST":
+#         try:
+#             #user logout
+#         except Exception as e:
+#             return jsonify({'error_msg': str(e)}), 500
+
+BASE_URL = "https://app.midtrans.com/iris"
+
+@app.route('/account/<wallet>', methods=['GET','POST','PATCH'])
+@cross_origin()
+def create_disbursment(wallet):
+    if request.method == 'POST':
+        try: 
+            name = request.json['name']
+            account_id = request.json['account_id']
+            base_url = BASE_URL + "/api/v1/beneficiaries"
+            payload = {
+                "name": "",
+                "account": "gopay",
+                "bank": wallet,
+                "email": "",
+                "alias_name": ""
+            }
+
+            payload_json_data = json.dumps(payload)
+
+            server_key = os.getenv('server_key')
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Authorization': 'Basic ' + base64(str(server_key + ":"))
+                # 'X-Idempotency-Key': 
+            }
+
+            if server_key is None:
+                return jsonify({'error': 'not authorized'}), 401
+
+            response = request.post(url=base_url, data=payload_json_data, headers=headers)
+            res = response.json()
+            print(res)
+
+            return jsonify({"data": res}), 200
+        
+        except Exception as err:
+            return jsonify({'error': 'internal server error', 'error_msg': str(e)}), 500
+
+    # elif request.method == "GET":
+    #     try:
+    #     except Exception as err:
+    #         return jsonify({'error': 'internal server error', 'error_msg': str(e)}), 500
+
+    # elif request.method == "PATCH":
+    #     try:
+    #     except Exception as err:
+    #         return jsonify({'error': 'internal server error', 'error_msg': str(e)}), 500
+
+    else:
+        return jsonify({'error': 'method not allowed'}), 405
+
+@app.route('/payouts', methods=["POST"])
+@cross_origin()
+def create_payout():
+    if request.method == "POST":
+        try:
+            name = request.json['name']
+            account_id = request.json['account_id']
+            base_url = BASE_URL + "/api/v1/beneficiaries"
+            payload = {
+                "name": "",
+                "account": "gopay",
+                "bank": wallet,
+                "email": "",
+                "alias_name": ""
+            }
+
+            payload_json_data = json.dumps(payload)
+
+            server_key = os.getenv('server_key')
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Authorization': 'Basic ' + base64(str(server_key + ":"))
+                # 'X-Idempotency-Key': 
+            }
+
+            if server_key is None:
+                return jsonify({'error': 'not authorized'}), 401
+
+            response = request.post(url=base_url, data=payload_json_data, headers=headers)
+            res = response.json()
+            print(res)
+
+            return jsonify({"data": res}), 200
+        except Exception as err:
+            return jsonify({"error_msg": str(err)}), 500
+    else:
+        return jsonify({"error": "method not allowed"}), 405
+
+
 @app.route('/transaction/<int:id_transaction>', methods=['PUT'])
 @cross_origin()
 def update_price(id_transaction):
@@ -32,7 +229,6 @@ def update_price(id_transaction):
         
         try:
             price = request.json['price']
-
             res = supabase_client.table('transactions').update({'price': price}).eq('id_transaction', id_transaction).execute()
             updated_data_price = res.data[0]
             if updated_data_price is None:
@@ -66,24 +262,6 @@ def register():
             res = supabase_client.table('users').insert(user_data).execute()
             return jsonify({'message': f"Data with email {res.data[0]['email']} successfully"})
         
-        except Exception as e:
-            return jsonify({'error': 'Internal server error', 'error_msg': str(e)}), 500
-        
-@app.route('/login', methods=['POST'])
-@cross_origin()
-def login():
-    if request.method == "POST":
-        try:
-            email = request.json['email']
-            password = request.json['password']
-            response = supabase_client.table('users').select('email, password').eq('email', email).execute()
-            userFound = response.data[0]
-            print(userFound)
-            if userFound and password == userFound['password']:
-                token = jwt.encode({'email': email}, app.config['SECRET_KEY'], algorithm='HS256')
-                return jsonify({'token': token})
-            else:
-                return jsonify({'message': 'Invalid credentials'}), 401
         except Exception as e:
             return jsonify({'error': 'Internal server error', 'error_msg': str(e)}), 500
 
@@ -449,10 +627,10 @@ def view_specific_wallet(id_wallet):
     if request.method == "GET":
         try:
             email = get_user_credential(request)
-            if email is None:
-                return jsonify({'error': 'internal server error'}), 500
+            # if email is None:
+            #     return jsonify({'error': 'internal server error'}), 500
 
-            if email == "no token":
+            if email == "no token" or email is None:
                 return jsonify({'error': 'user not authorized'}), 401
             
             result = supabase_client.rpc('get_user_specific_wallet_information', {'email_user': email, 'wallet_id_param': id_wallet}).execute()
@@ -468,6 +646,71 @@ def view_specific_wallet(id_wallet):
             return jsonify({'error': 'internal server error', 'error_msg': str(e)}), 500
     else:
         return jsonify({'error': 'method not allowed'}), 405
+
+
+oauth = OAuth(app)
+
+@app.route("/google_auth")
+@cross_origin()
+def login_with_google():
+    google = oauth.remote_app(
+    'google',
+    consumer_key=google_client_id,
+    consumer_secret=google_client_secret,
+    request_token_params={
+        'scope': 'email',
+    },
+    base_url='https://www.googleapis.com/oauth2/v1/',
+    request_token_url=None,
+    access_token_method='POST',
+    access_token_url='https://accounts.google.com/o/oauth2/token',
+    authorize_url='https://accounts.google.com/o/oauth2/auth',
+    )   
+
+    return google.authorize(callback=url_for('authorized', _external=True))
+
+@app.route('/google_auth/authorized')
+def authorized():
+    response = google.authorized_response()
+    if response is None or response.get('access_token') is None:
+        return 'Login failed.'
+
+    # session['google_token'] = (response['access_token'], '')
+    # account = (response['access_token'], '')
+    me = google.get('userinfo')
+    # Here, 'me.data' contains user information.
+    # You can perform registration process using this information if needed.
+
+    return jsonify({"data": me.data}), 200
+
+
+@app.route('/facebook')
+@cross_origin()
+def login_with_facebook():
+    FACEBOOK_CLIENT_ID = os.environ.get('FACEBOOK_CLIENT_ID')
+    FACEBOOK_CLIENT_SECRET = os.environ.get('FACEBOOK_CLIENT_SECRET')
+    oauth.register(
+        name='facebook',
+        client_id=FACEBOOK_CLIENT_ID,
+        client_secret=FACEBOOK_CLIENT_SECRET,
+        access_token_url='https://graph.facebook.com/oauth/access_token',
+        access_token_params=None,
+        authorize_url='https://www.facebook.com/dialog/oauth',
+        authorize_params=None,
+        api_base_url='https://graph.facebook.com/',
+        client_kwargs={'scope': 'email'},
+    )
+    redirect_uri = url_for('facebook_auth', _external=True)
+    return oauth.facebook.authorize_redirect(redirect_uri)
+
+@app.route('/facebook/auth/')
+def facebook_auth():
+    token = oauth.facebook.authorize_access_token()
+    resp = oauth.facebook.get(
+        'https://graph.facebook.com/me?fields=id,name,email,picture{url}')
+    profile = resp.json()
+    print("Facebook User ", profile)
+    return redirect('/')
 
 #update saldo user atau menggunakan trigger sql
 
