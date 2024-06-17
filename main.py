@@ -15,14 +15,26 @@ import jwt
 import datetime
 
 from config.spbs import get_supabase_client
-from flask_oauthlib.client import OAuth
+# from flask_oauthlib.client import OAuth
+from flask_caching import Cache
+import redis
 
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'rahasia'
 app.config['CORS_HEADERS'] = 'Content-Type'
 
-CORS(app, resources={r"/events": {"origins": "http://localhost:5173"}})
+
+app.config['CACHE_TYPE'] = 'redis'
+app.config['CACHE_REDIS_HOST'] = 'localhost'
+app.config['CACHE_REDIS_PORT'] = 6379
+app.config['CACHE_REDIS_DB'] = 0
+app.config['CACHE_REDIS_URL'] = 'redis://localhost:6379/0'
+app.config['CACHE_DEFAULT_TIMEOUT'] = 300
+
+cache = Cache(app)
+
+CORS(app, resources={r"/events": {"origins": "*"}})
 
 model = load_model('ecopc_b3.h5')
 
@@ -81,7 +93,15 @@ def email_otp():
             if cached_otp is None:
                 return jsonify({'error': 'your current otp already out of time, please send again'}), 404
             if str(otp) == str(cached_otp) and email is not None:
-                token = jwt.encode({'email': email}, app.config['SECRET_KEY'], algorithm='HS256')
+                id_role = supabase_client.table('users_roles').select('id_role').eq('email', email).execute()
+                roles = id_role.data
+                print(roles)
+                for val in roles:
+                    data = {
+                        'email': email,
+                        'role': ['admin'] if val['id_role'] == 1 or val['id_role'] == 2 else ['member']
+                    }
+                token = jwt.encode(data, app.config['SECRET_KEY'], algorithm='HS256')
                 return jsonify({'message': 'Login 200 OK', 'token': token}), 200
 
             return jsonify({'message': 'aneh'}), 400
@@ -221,7 +241,7 @@ def create_payout():
     else:
         return jsonify({"error": "method not allowed"}), 405
 
-
+#update transaksi
 @app.route('/transaction/<int:id_transaction>', methods=['PUT'])
 @cross_origin()
 def update_price(id_transaction):
@@ -229,17 +249,28 @@ def update_price(id_transaction):
         
         try:
             price = request.json['price']
-            res = supabase_client.table('transactions').update({'price': price}).eq('id_transaction', id_transaction).execute()
+            wallet_id = request.json['wallet_id']
+            if wallet_id is None:
+                return jsonify({'error': 'please select wallet to do transactions'}), 400
+                
+            res = supabase_client.table('transactions').update({'price_total': int(price)}).eq('id_transaction', id_transaction).execute()
             updated_data_price = res.data[0]
             if updated_data_price is None:
                 return jsonify({"error": "id transaction not found"}), 404
             
             ## update saldo dari wallet user atau pakai trigger sql
+            responds = supabase_client.table('wallets').select('balance').eq('id_wallet', wallet_id).execute()
+            balance = responds.data[0]
+            updated_price = balance + price
+            update_response = supabase_client.table('wallets').update({'balance': updated_price}).eq('id_wallet', wallet_id).execute()
+
+            if update_response is None:
+                return jsonify({'error': 'supabase server error'}), 500
             
             return jsonify({"message": f"price of transaction with id {id_transaction} successfully update to {price}"}), 200
         
         except Exception as e:
-            return jsonify({'error': 'Internal server error', 'error_msg': str(e)}), 500
+            return jsonify({'error': 'internal server error', 'error_msg': str(e)}), 500
     else:
         return jsonify({'error': 'method not allowed'}), 405
         
@@ -265,8 +296,10 @@ def register():
         except Exception as e:
             return jsonify({'error': 'Internal server error', 'error_msg': str(e)}), 500
 
-IMAGE_DIR = 'D:\\pkb\\foto-botol'
+IMAGE_DIR = 'D:\\DEVELOPMENT\\python-vscode\\pkb-ml\\ml-api\\foto-botol'
 
+
+# kirim foto
 @app.route('/images/<int:transaction_id>/<filename>')
 def serve_image(transaction_id, filename):
     directory = os.path.join(IMAGE_DIR, str(transaction_id))
@@ -340,7 +373,7 @@ def create_transaction():
         try:
             os.makedirs(os.path.join(IMAGE_DIR, str(generateID)))
             transaction = {
-                'id': generateID,
+                'id_transaction': generateID,
                 'email': email
             }
             supabase_client.table('transactions').insert(transaction).execute()
@@ -385,11 +418,19 @@ def set_roles(role_id, email):
 @app.route("/paid", methods=["GET"])
 @cross_origin()
 def statistic_controller():
-    role = get_role_query()
-    print(role)
-    your_datas = graph_transaction_by_day(role)
-    if your_datas is not None:
-        return jsonify({"data": your_datas}), 200
+    if request.method == "GET":
+        role = get_role_query()
+        # print(role)
+        un, undo, year = get_query_params()
+        cache_key = f"{role}-{year}"
+        cache_data = cache.get(cache_key)
+        if cache_data:
+            return jsonify({"data": cache_data}), 200
+
+        your_datas = graph_transaction_by_day(role)
+        if your_datas is not None and isinstance(your_datas, list):
+            cache.set(cache_key, your_datas)
+            return jsonify({"data": your_datas}), 200
 
 def graph_transaction_by_day(role):
     try:
@@ -402,15 +443,11 @@ def graph_transaction_by_day(role):
             
         email = token.get("email")
     except Exception as e:
-        return jsonify({"error": e}), 500
-
+        return jsonify({"error": str(e)}), 500
 
     start_date, end_date, year = get_query_params()
 
-    # months = []
-
-    # print(start_date)
-    if start_date == None and end_date == None and year == None:
+    if start_date is None and end_date is None and year is None:
         return jsonify({"error": "bad request, one parameter needed"}), 400
     try:
         your_datas = []
@@ -418,10 +455,9 @@ def graph_transaction_by_day(role):
         for i in range(1, 13):
             start_date = f'{year}-{i:02d}-01'
             if i in {1, 3, 5, 7, 8, 10, 12}:
-                end_date = f'{year}-{i:02d}-31' 
+                end_date = f'{year}-{i:02d}-31'
             elif i == 2:
-                end_date = f'{year}-{i:02d}-29'
-
+                end_date = f'{year}-{i:02d}-28'
                 # also later add kabisat
             else:
                 end_date = f'{year}-{i:02d}-30'
@@ -431,28 +467,29 @@ def graph_transaction_by_day(role):
             sum = 0
             print(f"{val[0]}, {val[1]}")
             
-            if role != "admin":
-                graph_transaction = supabase_client.table('transaction').select("*").eq('email', email).gte("created_at", val[0]).lte("created_at", val[1]).execute()
-                # cur.execute('''SELECT * FROM transaksi WHERE email = %s AND created_at BETWEEN %s AND %s''', (email, val[0], val[1]))
-            else:
-                graph_transaction = supabase_client.table('transaction').select("*").gte("created_at", val[0]).lte("created_at", val[1]).execute()
-                # cur.execute('''SELECT * FROM transaksi created_at BETWEEN %s AND %s''', (val[0], val[1]))
-            # rv = cur.fetchall()
+            try: 
+                if role != "admin":
+                    graph_transaction, count = supabase_client.table('transactions').select("*").eq('email', email).gte("created_at", val[0]).lte("created_at", val[1]).execute()
+                else:
+                    graph_transaction, count = supabase_client.table('transactions').select("*").gte("created_at", val[0]).lte("created_at", val[1]).execute()
+            except Exception as e:
+                return jsonify({"error": "transaction not found", "error_msg": str(e)}), 404
 
             flag = None
-            for data in graph_transaction.data[0]:
+            unnecessary, transaction = graph_transaction
+            print(transaction)
+            for data in transaction:
                 if flag is None:
-                    flag = data["created_at"]
-                    flag = flag.strftime("%m")
-                    flag = int(flag[1:])
-                sum = sum + data[3]
-            obj = dict(month = flag, price = sum)
+                    flag = data['created_at']
+                    flag = int(flag[5:7])  # bug fixed
+                sum += data['price_total']
+            obj = dict(month=flag, price=sum)
             your_datas.append(obj)
         
         return your_datas
     
     except Exception as e:
-        return jsonify({"message": e}), 500
+        return jsonify({"message": str(e)}), 500
 
 def get_query_params():
     start_date = request.args.get("start_date")
@@ -648,69 +685,69 @@ def view_specific_wallet(id_wallet):
         return jsonify({'error': 'method not allowed'}), 405
 
 
-oauth = OAuth(app)
+# oauth = OAuth(app)
 
-@app.route("/google_auth")
-@cross_origin()
-def login_with_google():
-    google = oauth.remote_app(
-    'google',
-    consumer_key=google_client_id,
-    consumer_secret=google_client_secret,
-    request_token_params={
-        'scope': 'email',
-    },
-    base_url='https://www.googleapis.com/oauth2/v1/',
-    request_token_url=None,
-    access_token_method='POST',
-    access_token_url='https://accounts.google.com/o/oauth2/token',
-    authorize_url='https://accounts.google.com/o/oauth2/auth',
-    )   
+# @app.route("/google_auth")
+# @cross_origin()
+# def login_with_google():
+#     google = oauth.remote_app(
+#     'google',
+#     consumer_key=google_client_id,
+#     consumer_secret=google_client_secret,
+#     request_token_params={
+#         'scope': 'email',
+#     },
+#     base_url='https://www.googleapis.com/oauth2/v1/',
+#     request_token_url=None,
+#     access_token_method='POST',
+#     access_token_url='https://accounts.google.com/o/oauth2/token',
+#     authorize_url='https://accounts.google.com/o/oauth2/auth',
+#     )   
 
-    return google.authorize(callback=url_for('authorized', _external=True))
+#     return google.authorize(callback=url_for('authorized', _external=True))
 
-@app.route('/google_auth/authorized')
-def authorized():
-    response = google.authorized_response()
-    if response is None or response.get('access_token') is None:
-        return 'Login failed.'
+# @app.route('/google_auth/authorized')
+# def authorized():
+#     response = google.authorized_response()
+#     if response is None or response.get('access_token') is None:
+#         return 'Login failed.'
 
-    # session['google_token'] = (response['access_token'], '')
-    # account = (response['access_token'], '')
-    me = google.get('userinfo')
-    # Here, 'me.data' contains user information.
-    # You can perform registration process using this information if needed.
+#     # session['google_token'] = (response['access_token'], '')
+#     # account = (response['access_token'], '')
+#     me = google.get('userinfo')
+#     # Here, 'me.data' contains user information.
+#     # You can perform registration process using this information if needed.
 
-    return jsonify({"data": me.data}), 200
+#     return jsonify({"data": me.data}), 200
 
 
-@app.route('/facebook')
-@cross_origin()
-def login_with_facebook():
-    FACEBOOK_CLIENT_ID = os.environ.get('FACEBOOK_CLIENT_ID')
-    FACEBOOK_CLIENT_SECRET = os.environ.get('FACEBOOK_CLIENT_SECRET')
-    oauth.register(
-        name='facebook',
-        client_id=FACEBOOK_CLIENT_ID,
-        client_secret=FACEBOOK_CLIENT_SECRET,
-        access_token_url='https://graph.facebook.com/oauth/access_token',
-        access_token_params=None,
-        authorize_url='https://www.facebook.com/dialog/oauth',
-        authorize_params=None,
-        api_base_url='https://graph.facebook.com/',
-        client_kwargs={'scope': 'email'},
-    )
-    redirect_uri = url_for('facebook_auth', _external=True)
-    return oauth.facebook.authorize_redirect(redirect_uri)
+# @app.route('/facebook')
+# @cross_origin()
+# def login_with_facebook():
+#     FACEBOOK_CLIENT_ID = os.environ.get('FACEBOOK_CLIENT_ID')
+#     FACEBOOK_CLIENT_SECRET = os.environ.get('FACEBOOK_CLIENT_SECRET')
+#     oauth.register(
+#         name='facebook',
+#         client_id=FACEBOOK_CLIENT_ID,
+#         client_secret=FACEBOOK_CLIENT_SECRET,
+#         access_token_url='https://graph.facebook.com/oauth/access_token',
+#         access_token_params=None,
+#         authorize_url='https://www.facebook.com/dialog/oauth',
+#         authorize_params=None,
+#         api_base_url='https://graph.facebook.com/',
+#         client_kwargs={'scope': 'email'},
+#     )
+#     redirect_uri = url_for('facebook_auth', _external=True)
+#     return oauth.facebook.authorize_redirect(redirect_uri)
 
-@app.route('/facebook/auth/')
-def facebook_auth():
-    token = oauth.facebook.authorize_access_token()
-    resp = oauth.facebook.get(
-        'https://graph.facebook.com/me?fields=id,name,email,picture{url}')
-    profile = resp.json()
-    print("Facebook User ", profile)
-    return redirect('/')
+# @app.route('/facebook/auth/')
+# def facebook_auth():
+#     token = oauth.facebook.authorize_access_token()
+#     resp = oauth.facebook.get(
+#         'https://graph.facebook.com/me?fields=id,name,email,picture{url}')
+#     profile = resp.json()
+#     print("Facebook User ", profile)
+#     return redirect('/')
 
 #update saldo user atau menggunakan trigger sql
 
@@ -723,3 +760,6 @@ def hello():
     
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
+
+
+    
