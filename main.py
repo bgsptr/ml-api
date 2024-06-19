@@ -242,6 +242,8 @@ def create_payout():
         return jsonify({"error": "method not allowed"}), 405
 
 #update transaksi
+
+#bug
 @app.route('/transaction/<int:id_transaction>', methods=['PUT'])
 @cross_origin()
 def update_price(id_transaction):
@@ -249,30 +251,65 @@ def update_price(id_transaction):
         
         try:
             price = request.json['price']
-            wallet_id = request.json['wallet_id']
+            # wallet_id = request.json['wallet_id']
+            wallet_id = '365210-satu-20240602'
             if wallet_id is None:
                 return jsonify({'error': 'please select wallet to do transactions'}), 400
+
+            create_transaction = datetime.datetime.now().date()
+            print(create_transaction)
                 
-            res = supabase_client.table('transactions').update({'price_total': int(price)}).eq('id_transaction', id_transaction).execute()
+            res = supabase_client.table('transactions').update({'created_at': str(create_transaction), 'price_total': int(price)}).eq('id_transaction', id_transaction).execute()
             updated_data_price = res.data[0]
             if updated_data_price is None:
                 return jsonify({"error": "id transaction not found"}), 404
             
             ## update saldo dari wallet user atau pakai trigger sql
             responds = supabase_client.table('wallets').select('balance').eq('id_wallet', wallet_id).execute()
-            balance = responds.data[0]
+            print(responds)
+            balance = responds.data[0]['balance']
             updated_price = balance + price
             update_response = supabase_client.table('wallets').update({'balance': updated_price}).eq('id_wallet', wallet_id).execute()
 
             if update_response is None:
                 return jsonify({'error': 'supabase server error'}), 500
             
-            return jsonify({"message": f"price of transaction with id {id_transaction} successfully update to {price}"}), 200
+            return jsonify({"message": f"price of transaction with id {id_transaction} successfully update to {price}", "wallet": f"insert{price} to wallet {wallet_id}"}), 200
         
         except Exception as e:
             return jsonify({'error': 'internal server error', 'error_msg': str(e)}), 500
     else:
         return jsonify({'error': 'method not allowed'}), 405
+
+@app.route('/admins', methods=['GET'])
+@cross_origin()
+def get_all_admin():
+    if request.method == "GET":
+        # users = []
+
+        try:
+            res = supabase_client.table('users_roles').select('email').eq('id_role', 1).execute()
+            # print(res)
+            emails = [data['email'] for data in res.data]
+
+            # print(emails)
+
+            users_data = supabase_client.table('users').select('*').in_('email', emails).execute()
+            users_info = {}
+
+            print(users_data)
+            for data in users_data.data:
+                information = {
+                    "fname": data['fname'],
+                    "lname": data['lname'],
+                    "created_at": data['created_at']
+                }
+                users_info[data['email']] = information
+
+            return jsonify({"message": users_info}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        
         
 @app.route('/register', methods=['POST'])
 @cross_origin()
@@ -425,6 +462,7 @@ def statistic_controller():
         cache_key = f"{role}-{year}"
         cache_data = cache.get(cache_key)
         if cache_data:
+            cache.delete(cache_key)
             return jsonify({"data": cache_data}), 200
 
         your_datas = graph_transaction_by_day(role)
@@ -657,6 +695,31 @@ def admin_verified_wallet(id_wallet):
 # @app.route("/me/wallet")
 # @cross_origin
 
+#view all verified wallet
+@app.route("/wallets", methods=["GET"])
+@cross_origin()
+
+def all_wallets_from_user():
+    if request.method == "GET":
+        try:
+            email = get_user_credential(request)
+            if email == "no token" or email is None:
+                return jsonify({'error': 'user not authorized'}), 401
+
+            res = supabase_client.table('wallets').select('*').execute()
+            data = res.data[0]
+
+            if data is None:
+                return jsonify({"error": "wallet not found"}), 404
+                
+            return jsonify({"data": data}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    else:
+        return jsonify({"error": "method not allowed"}), 405
+
+#view detail of verified wallet
 @app.route("/wallet/<id_wallet>", methods=["GET"])
 @cross_origin()
 
