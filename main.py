@@ -2,7 +2,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory, url_fo
 # flask version 2.2.2 cek untuk send_from_directory atau fungsi lainnya
 from flask_cors import CORS, cross_origin
 from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import load_img
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.vgg16 import preprocess_input
 from PIL import Image
 import numpy as np
@@ -15,6 +15,7 @@ import jwt
 import datetime
 
 from config.spbs import get_supabase_client
+from flask_oauthlib.client import OAuth
 # from flask_oauthlib.client import OAuth
 from flask_caching import Cache
 import redis
@@ -24,6 +25,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'rahasia'
 app.config['CORS_HEADERS'] = 'Content-Type'
 
+CORS(app, resources={r"/events": {"origins": "*"}})
 
 app.config['CACHE_TYPE'] = 'redis'
 app.config['CACHE_REDIS_HOST'] = 'localhost'
@@ -37,6 +39,7 @@ cache = Cache(app)
 CORS(app, resources={r"/events": {"origins": "*"}})
 
 model = load_model('ecopc_b3.h5')
+yolo_model = load_model("./yolo_model.h5")
 
 supabase_client = get_supabase_client()
 
@@ -333,8 +336,8 @@ def register():
         except Exception as e:
             return jsonify({'error': 'Internal server error', 'error_msg': str(e)}), 500
 
-IMAGE_DIR = 'D:\\DEVELOPMENT\\python-vscode\\pkb-ml\\ml-api\\foto-botol'
-
+# IMAGE_DIR = 'D:\\pkb\\foto-botol'
+IMAGE_DIR = 'foto-botol'
 
 # kirim foto
 @app.route('/images/<int:transaction_id>/<filename>')
@@ -371,6 +374,8 @@ def sse(transaction_id):
             yield f"data: {json.dumps(data)}\n\n"
             time.sleep(2)
         yield "data: {\"status\": \"END\"}\n\n"
+        # delete cache
+        # cache.delete("id_transaction_cache")
 
     return Response(image_from_os(transaction_id), mimetype='text/event-stream')
 
@@ -387,11 +392,17 @@ def decode_token(token=None):
     decoded_data = jwt.decode(jwt=token, key='rahasia', algorithms=["HS256"])
     return decoded_data
 
-@app.route("/uploads", methods=["POST"])
+#init transaction and give id to esp board
+@app.route("/api/transaction/init", methods=["POST"])
 @cross_origin()
-def create_transaction():
+def initialize_id_transaction():
     if request.method == "POST":
         auth_header = request.headers.get("Authorization")
+        print(auth_header)
+
+        if not auth_header:
+            return jsonify({'message': "Authorization header missing"}), 401
+
         token = auth_header.split()[1]
 
         token = decode_token(token)
@@ -403,31 +414,219 @@ def create_transaction():
         generateID = math.floor(100000 + random.random() * (99999999 - 100000))
         print(generateID)
         print(email)
-        print(request.files.getlist('file'))
 
-        files = request.files.getlist('file')
+        cache.set("id_transaction_cache", generateID)
+
+        return jsonify({'message': 'id transaction successfully cached'}), 200
+
+    else:
+        return jsonify({'message': 'Invalid request method'}), 405
+
+# class BoundBox:
+#     def __init__(self, xmin, ymin, xmax, ymax, objness = None, classes = None):
+#         self.xmin = xmin
+#         self.ymin = ymin
+#         self.xmax = xmax
+#         self.ymax = ymax
+#         self.objness = objness
+#         self.classes = classes
+#         self.label = -1
+#         self.score = -1
+
+#     def get_label(self):
+#         if self.label == -1:
+#             self.label = np.argmax(self.classes)
+
+#         return self.label
+
+#     def get_score(self):
+#         if self.score == -1:
+#             self.score = self.classes[self.get_label()]
+
+#         return self.score
+
+# def _sigmoid(x):
+#     return 1. / (1. + np.exp(-x))
+
+# def decode_netout(netout, anchors, obj_thresh, net_h, net_w):
+#     grid_h, grid_w = netout.shape[:2]
+#     nb_box = 3
+#     netout = netout.reshape((grid_h, grid_w, nb_box, -1))
+#     nb_class = netout.shape[-1] - 5
+#     boxes = []
+#     netout[..., :2]  = _sigmoid(netout[..., :2])
+#     netout[..., 4:]  = _sigmoid(netout[..., 4:])
+#     netout[..., 5:]  = netout[..., 4][..., np.newaxis] * netout[..., 5:]
+#     netout[..., 5:] *= netout[..., 5:] > obj_thresh
+
+#     for i in range(grid_h*grid_w):
+#         row = i / grid_w
+#         col = i % grid_w
+#         for b in range(nb_box):
+#             # 4th element is objectness score
+#             objectness = netout[int(row)][int(col)][b][4]
+#             if(objectness.all() <= obj_thresh): continue
+#             # first 4 elements are x, y, w, and h
+#             x, y, w, h = netout[int(row)][int(col)][b][:4]
+#             x = (col + x) / grid_w # center position, unit: image width
+#             y = (row + y) / grid_h # center position, unit: image height
+#             w = anchors[2 * b + 0] * np.exp(w) / net_w # unit: image width
+#             h = anchors[2 * b + 1] * np.exp(h) / net_h # unit: image height
+#             # last elements are class probabilities
+#             classes = netout[int(row)][col][b][5:]
+#             box = BoundBox(x-w/2, y-h/2, x+w/2, y+h/2, objectness, classes)
+#             boxes.append(box)
+#     return boxes
+
+# def correct_yolo_boxes(boxes, image_h, image_w, net_h, net_w):
+#     new_w, new_h = net_w, net_h
+#     for i in range(len(boxes)):
+#         x_offset, x_scale = (net_w - new_w)/2./net_w, float(new_w)/net_w
+#         y_offset, y_scale = (net_h - new_h)/2./net_h, float(new_h)/net_h
+#         boxes[i].xmin = int((boxes[i].xmin - x_offset) / x_scale * image_w)
+#         boxes[i].xmax = int((boxes[i].xmax - x_offset) / x_scale * image_w)
+#         boxes[i].ymin = int((boxes[i].ymin - y_offset) / y_scale * image_h)
+#         boxes[i].ymax = int((boxes[i].ymax - y_offset) / y_scale * image_h)
+
+# def _interval_overlap(interval_a, interval_b):
+#     x1, x2 = interval_a
+#     x3, x4 = interval_b
+#     if x3 < x1:
+#         if x4 < x1:
+#             return 0
+#         else:
+#             return min(x2,x4) - x1
+#     else:
+#         if x2 < x3:
+#             return 0
+#         else:
+#             return min(x2,x4) - x3
+
+# def bbox_iou(box1, box2):
+#     intersect_w = _interval_overlap([box1.xmin, box1.xmax], [box2.xmin, box2.xmax])
+#     intersect_h = _interval_overlap([box1.ymin, box1.ymax], [box2.ymin, box2.ymax])
+#     intersect = intersect_w * intersect_h
+#     w1, h1 = box1.xmax-box1.xmin, box1.ymax-box1.ymin
+#     w2, h2 = box2.xmax-box2.xmin, box2.ymax-box2.ymin
+#     union = w1*h1 + w2*h2 - intersect
+#     return float(intersect) / union
+
+# def do_nms(boxes, nms_thresh):
+#     if len(boxes) > 0:
+#         nb_class = len(boxes[0].classes)
+#     else:
+#         return
+#     for c in range(nb_class):
+#         sorted_indices = np.argsort([-box.classes[c] for box in boxes])
+#         for i in range(len(sorted_indices)):
+#             index_i = sorted_indices[i]
+#             if boxes[index_i].classes[c] == 0: continue
+#             for j in range(i+1, len(sorted_indices)):
+#                 index_j = sorted_indices[j]
+#                 if bbox_iou(boxes[index_i], boxes[index_j]) >= nms_thresh:
+#                     boxes[index_j].classes[c] = 0
+
+from ultralytics import YOLO
+
+def detect_bottle_esp(photo_filename):
+    yolo_roboflow_model = YOLO('yolov8n.pt')
+
+    results = yolo_roboflow_model(photo_filename)
+
+    class_names = yolo_roboflow_model.names
+
+    for r in results:
+        class_indices = r.boxes.cls
+        for idx in class_indices:
+            class_name = class_names[int(idx)]
+            if class_name == "bottle":
+                return True
+
+    return False
+
+@app.route("/uploads", methods=["POST"])
+@cross_origin()
+def create_transaction():
+    if request.method == "POST":
+        auth_header = request.headers.get("Authorization")
+        print(auth_header)
+
+        if not auth_header:
+            return jsonify({'message': "Authorization header missing"}), 401
+
+        token = auth_header.split()[1]
+
+        token = decode_token(token)
+        if token is False:
+            return jsonify({'message': "no token"}), 401
+        
+        email = token.get("email")
+
+        # generateID = math.floor(100000 + random.random() * (99999999 - 100000))
+        # print(generateID)
+        # print(email)
+        # print(request.files.getlist('imageFile'))
 
         try:
-            os.makedirs(os.path.join(IMAGE_DIR, str(generateID)))
-            transaction = {
-                'id_transaction': generateID,
-                'email': email
-            }
-            supabase_client.table('transactions').insert(transaction).execute()
-            # cur.execute('''INSERT INTO transaksi (id, email) VALUES (%s, %s)''', (generateID, email))
-            # mysql.connection.commit()
+            file = request.files('imageFile')
+            # if len(files) == 0:
+            #     raise ValueError("No files provided")
 
-            for file in files:
-                file_path = file.filename
-                img_tf_data = {
-                    # 'id_bottle': 2,
+        except Exception as err:
+            print(f"Error: {str(err)}")
+            return jsonify({"error": "bad request, request body seems not match"}), 400
+
+        # cache get id transaction
+        id_cache = cache.get("id_transaction_cache")
+
+        if id_cache is None:
+            return jsonify({"error": "id_transaction not found, please create transaction first"}), 404
+
+        id_str = str(id_cache)
+        generateID = int(id_str)
+
+        try:
+            new_folder = os.path.join(IMAGE_DIR, str(generateID))
+            if not os.path.exists(new_folder):
+                os.makedirs(new_folder)
+                transaction = {
                     'id_transaction': generateID,
-                    'file_path': file_path
+                    'email': email
                 }
-                res = supabase_client.table('transactions_bottles').insert(img_tf_data).execute()
-                file.save(os.path.join(IMAGE_DIR, str(generateID), file_path))
+                supabase_client.table('transactions').insert(transaction).execute()
+                # cur.execute('''INSERT INTO transaksi (id, email) VALUES (%s, %s)''', (generateID, email))
+                # mysql.connection.commit()
 
-            return jsonify({'message': 'Sukses mengupload', 'transaction_id': res.data[0]['id_transaction']}), 200
+            # for file in files:
+            old_name_photo = file.filename
+            # if not detect_bottle_esp(old_name_photo):
+            #     return jsonify({"error: bottle not found"}), 404
+
+            uuid_filename = uuid.uuid4()
+            file_path = uuid_filename
+                    
+            ext_file = old_name_photo.split(".")[1]
+            new_name_photo = f"{str(uuid_filename)}.{ext_file}"
+
+            img_tf_data = {
+                # 'id_bottle': 2,
+                'id_transaction': generateID,
+                'file_path': new_name_photo
+            }
+            res = supabase_client.table('transactions_bottles').insert(img_tf_data).execute()
+
+            try:
+                file.save(os.path.join(IMAGE_DIR, str(generateID), old_name_photo))
+            except Exception as error_file_saved:
+                print(f"error saving file: {error_file_saved}")
+                return jsonify({"error": "internal server error, can't save photo"}), 500
+
+            pwd = os.getcwd()
+            old_abs_path = f"{pwd}/{IMAGE_DIR}/{generateID}/{old_name_photo}"
+            new_abs_path = f"{pwd}/{IMAGE_DIR}/{generateID}/{new_name_photo}"
+            os.rename(old_abs_path, new_abs_path)
+
+            return jsonify({'message': 'Sukses mengupload', 'transaction_id': generateID}), 200
 
         except Exception as e:
             print(f"Error: {e}")
@@ -824,5 +1023,4 @@ def hello():
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
 
-
-    
+        
